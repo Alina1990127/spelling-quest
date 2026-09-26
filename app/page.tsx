@@ -6,7 +6,15 @@ import { loadProgress, saveProgress, scheduleReview } from "@/lib/progress";
 import type { SpellingWord, WordProgress } from "@/types";
 
 type Phase = "home" | "training" | "review" | "boss" | "progress" | "summary";
-type TrainingStep = "learn" | "sound" | "letter" | "spell";
+type TrainingStep =
+  | "learn"
+  | "hear"
+  | "map"
+  | "blend"
+  | "context"
+  | "recall"
+  | "spell"
+  | "repair";
 type Result = "correct" | "wrong" | null;
 
 const blankProgress = (): WordProgress => ({
@@ -15,10 +23,10 @@ const blankProgress = (): WordProgress => ({
   correctFullSpells: 0
 });
 
-function speak(word: string) {
+function speak(text: string) {
   if (typeof window === "undefined" || !("speechSynthesis" in window)) return;
   window.speechSynthesis.cancel();
-  const utterance = new SpeechSynthesisUtterance(word);
+  const utterance = new SpeechSynthesisUtterance(text);
   utterance.lang = "en-US";
   utterance.rate = 0.82;
   window.speechSynthesis.speak(utterance);
@@ -35,6 +43,24 @@ function statusLabel(status?: WordProgress["status"]) {
     : status.charAt(0).toUpperCase() + status.slice(1);
 }
 
+function chunkOptions(correct: string) {
+  const vowels = ["a", "e", "i", "o", "u"];
+  const options = new Set<string>([correct]);
+
+  if (correct.length === 1) {
+    for (const v of vowels) {
+      if (v !== correct) options.add(v);
+      if (options.size >= 3) break;
+    }
+  } else {
+    options.add(correct.replace(/[aeiou]/i, "e"));
+    options.add(correct.replace(/[aeiou]/i, "i"));
+    options.add(correct + correct.slice(-1));
+  }
+
+  return Array.from(options).filter(Boolean).slice(0, 3).sort();
+}
+
 export default function HomePage() {
   const [phase, setPhase] = useState<Phase>("home");
   const [trainingStep, setTrainingStep] = useState<TrainingStep>("learn");
@@ -48,10 +74,23 @@ export default function HomePage() {
   const [sessionScore, setSessionScore] = useState(0);
   const [summaryTitle, setSummaryTitle] = useState("");
   const [trainingStars, setTrainingStars] = useState(0);
-  const [soundChoice, setSoundChoice] = useState("");
-  const [soundChecked, setSoundChecked] = useState(false);
-  const [letterChoice, setLetterChoice] = useState("");
-  const [letterChecked, setLetterChecked] = useState(false);
+
+  const [soundCountChoice, setSoundCountChoice] = useState<number | null>(null);
+  const [soundCountChecked, setSoundCountChecked] = useState(false);
+
+  const [mapIndex, setMapIndex] = useState(0);
+  const [mapChoice, setMapChoice] = useState("");
+  const [mapChecked, setMapChecked] = useState(false);
+
+  const [blendChoices, setBlendChoices] = useState<string[]>([]);
+  const [contextChoice, setContextChoice] = useState("");
+  const [contextChecked, setContextChecked] = useState(false);
+
+  const [recallAnswer, setRecallAnswer] = useState("");
+  const [recallChecked, setRecallChecked] = useState(false);
+
+  const [delayedRetryIds, setDelayedRetryIds] = useState<number[]>([]);
+  const [delayedMode, setDelayedMode] = useState(false);
 
   useEffect(() => {
     setProgress(loadProgress());
@@ -76,24 +115,28 @@ export default function HomePage() {
 
   const current = sessionWords[index];
 
-  const meaningOptions = useMemo(() => {
+  const contextOptions = useMemo(() => {
     if (!current) return [];
-    const others = words
-      .filter((word) => word.id !== current.id)
-      .slice(0, 2)
-      .map((word) => word.meaning);
-    return [current.meaning, ...others].sort();
+    return [current.sentence, ...current.contextDistractors].sort();
   }, [current?.id]);
 
-  const letterPuzzle = useMemo(() => {
-    if (!current) return { display: "", correct: "", options: [] as string[] };
-    const word = current.word.toLowerCase();
-    const hideIndex = Math.max(1, Math.min(word.length - 2, Math.floor(word.length / 2)));
-    const correct = word[hideIndex];
-    const display = word.slice(0, hideIndex) + "_" + word.slice(hideIndex + 1);
-    const alphabet = ["a", "e", "i", "o", "u", "r", "l", "n", "t", "s", "c", "d"];
-    const options = [correct, ...alphabet.filter((x) => x !== correct).slice(0, 2)].sort();
-    return { display, correct, options };
+  const currentMapCorrect = current?.spellingChunks[mapIndex] ?? "";
+  const currentMapSound = current?.soundChunks[mapIndex] ?? "";
+  const currentMapOptions = useMemo(
+    () => chunkOptions(currentMapCorrect),
+    [currentMapCorrect]
+  );
+
+  const blendPool = useMemo(() => {
+    if (!current) return [];
+    return [...current.spellingChunks].reverse();
+  }, [current?.id]);
+
+  const assistedDisplay = useMemo(() => {
+    if (!current) return "";
+    const i = current.word.toLowerCase().indexOf(current.trickyChunk.toLowerCase());
+    if (i < 0) return current.word;
+    return current.word.slice(0, i) + "____" + current.word.slice(i + current.trickyChunk.length);
   }, [current?.id]);
 
   function persist(next: Record<number, WordProgress>) {
@@ -106,10 +149,20 @@ export default function HomePage() {
     setResult(null);
     setShowMeaning(false);
     setShowSentence(false);
-    setSoundChoice("");
-    setSoundChecked(false);
-    setLetterChoice("");
-    setLetterChecked(false);
+
+    setSoundCountChoice(null);
+    setSoundCountChecked(false);
+
+    setMapIndex(0);
+    setMapChoice("");
+    setMapChecked(false);
+
+    setBlendChoices([]);
+    setContextChoice("");
+    setContextChecked(false);
+
+    setRecallAnswer("");
+    setRecallChecked(false);
   }
 
   function startTraining() {
@@ -124,6 +177,8 @@ export default function HomePage() {
     setTrainingStep("learn");
     setSessionScore(0);
     setTrainingStars(0);
+    setDelayedRetryIds([]);
+    setDelayedMode(false);
     resetWordState();
     setPhase("training");
   }
@@ -172,12 +227,29 @@ export default function HomePage() {
     const nextIndex = index + 1;
 
     if (nextIndex >= sessionWords.length) {
+      if (phase === "training" && !delayedMode && delayedRetryIds.length > 0) {
+        const retryWords = delayedRetryIds
+          .map((id) => words.find((word) => word.id === id))
+          .filter((word): word is SpellingWord => Boolean(word));
+
+        setSessionWords(retryWords);
+        setIndex(0);
+        setDelayedMode(true);
+        resetWordState();
+        setTrainingStep("spell");
+        if (retryWords[0]) setTimeout(() => speak(retryWords[0].word), 150);
+        return;
+      }
+
       const title =
         phase === "boss"
           ? "Boss Battle Complete"
           : phase === "review"
           ? "Review Complete"
+          : delayedMode
+          ? "Delayed Check Complete"
           : "Training Complete";
+
       finishSession(title);
       return;
     }
@@ -186,7 +258,8 @@ export default function HomePage() {
     resetWordState();
 
     if (phase === "training") {
-      setTrainingStep("learn");
+      setTrainingStep(delayedMode ? "spell" : "learn");
+      if (delayedMode) setTimeout(() => speak(sessionWords[nextIndex].word), 150);
     } else {
       setTimeout(() => speak(sessionWords[nextIndex].word), 150);
     }
@@ -203,7 +276,7 @@ export default function HomePage() {
       let status: WordProgress["status"] = "learning";
 
       if (correctFullSpells >= 4) status = "mastered";
-      else if ((phase === "review" || phase === "boss") && correctFullSpells >= 2) {
+      else if ((phase === "review" || phase === "boss" || delayedMode) && correctFullSpells >= 2) {
         status = "bee-ready";
       }
 
@@ -236,6 +309,12 @@ export default function HomePage() {
       };
 
       persist(next);
+
+      if (phase === "training" && !delayedMode) {
+        setDelayedRetryIds((ids) => (ids.includes(current.id) ? ids : [...ids, current.id]));
+        setTrainingStep("repair");
+      }
+
       setResult("wrong");
     }
   }
@@ -277,7 +356,7 @@ export default function HomePage() {
             <span className="moduleIcon">🎧</span>
             <span className="moduleEyebrow">LEARN NEW WORDS</span>
             <strong>Training</strong>
-            <span>Hear → understand → mini game → Full Spell.</span>
+            <span>Learn → hear parts → map sounds → build → context → recall → Full Spell.</span>
             <b>Start Training →</b>
           </button>
 
@@ -403,7 +482,7 @@ export default function HomePage() {
       <main>
         <div className="gameTopBar">
           <div>
-            <span className="badge">TRAINING QUEST</span>
+            <span className="badge">{delayedMode ? "DELAYED CHECK" : "TRAINING QUEST"}</span>
             <h2>Word {index + 1} of {sessionWords.length}</h2>
           </div>
 
@@ -413,23 +492,28 @@ export default function HomePage() {
           </div>
         </div>
 
-        <div className="questTrack">
-          {sessionWords.map((word, i) => (
-            <div
-              key={word.id}
-              className={`questNode ${i < index ? "done" : i === index ? "active" : ""}`}
-            >
-              {i < index ? "✓" : i + 1}
-            </div>
-          ))}
-        </div>
+        {!delayedMode && (
+          <div className="questTrack">
+            {sessionWords.map((word, i) => (
+              <div
+                key={word.id}
+                className={`questNode ${i < index ? "done" : i === index ? "active" : ""}`}
+              >
+                {i < index ? "✓" : i + 1}
+              </div>
+            ))}
+          </div>
+        )}
 
         {trainingStep === "learn" && (
           <div className="card gameCard">
-            <div className="gameRoundLabel">LEARN · MEET THE WORD</div>
+            <div className="gameRoundLabel">1 · MEET THE WORD</div>
             <div className="gameIcon">📚</div>
             <h1 className="learnWord">{current.word}</h1>
-            <button className="soundButton" onClick={() => speak(current.word)}>🔊 Hear Pronunciation</button>
+
+            <button className="soundButton" onClick={() => speak(current.word)}>
+              🔊 Hear the whole word
+            </button>
 
             <div className="learnFacts">
               <div>
@@ -437,122 +521,262 @@ export default function HomePage() {
                 <p>{current.meaning}</p>
               </div>
               <div>
-                <strong>Sentence</strong>
+                <strong>In a sentence</strong>
                 <p>{current.sentence}</p>
               </div>
             </div>
 
+            <p className="small learningTip">
+              Look at the word while you listen. Say it once yourself before moving on.
+            </p>
+
             <div className="actions">
-              <button className="primary" onClick={() => setTrainingStep("sound")}>
-                I’ve Learned It → Start Game
+              <button className="primary" onClick={() => setTrainingStep("hear")}>
+                I know what it means → Hear the Parts
               </button>
             </div>
           </div>
         )}
 
-        {trainingStep === "sound" && (
+        {trainingStep === "hear" && (
           <div className="card gameCard">
-            <div className="gameRoundLabel">GAME 1 · SOUND HUNT</div>
-            <div className="gameIcon">🎧</div>
-            <h1>Which meaning matches the word?</h1>
-            <p className="small">Listen first. No spelling is shown yet.</p>
+            <div className="gameRoundLabel">2 · HEAR THE PARTS</div>
+            <div className="gameIcon">👂</div>
+            <h1>How many sound parts can you hear?</h1>
+            <p className="small">Listen before you look at any spelling chunks.</p>
 
             <button className="soundButton" onClick={() => speak(current.word)}>
-              🔊 PLAY WORD
+              🔊 Play word
+            </button>
+
+            <div className="countChoices">
+              {[1, 2, 3, 4].map((count) => (
+                <button
+                  key={count}
+                  className={`countChoice ${soundCountChoice === count ? "selected" : ""}`}
+                  onClick={() => !soundCountChecked && setSoundCountChoice(count)}
+                >
+                  {count}
+                </button>
+              ))}
+            </div>
+
+            {!soundCountChecked ? (
+              <button
+                className="primary"
+                disabled={soundCountChoice === null}
+                onClick={() => setSoundCountChecked(true)}
+              >
+                Check
+              </button>
+            ) : (
+              <>
+                <div className={`result ${soundCountChoice === current.soundChunks.length ? "ok" : "no"}`}>
+                  {soundCountChoice === current.soundChunks.length
+                    ? "Yes — you heard the sound structure."
+                    : `Listen again. This word has ${current.soundChunks.length} sound part(s).`}
+                </div>
+
+                <div className="soundChunks">
+                  {current.soundChunks.map((chunk, i) => (
+                    <button key={i} className="soundChunk" onClick={() => speak(chunk)}>
+                      🔊 {chunk}
+                    </button>
+                  ))}
+                </div>
+
+                <button className="primary" onClick={() => setTrainingStep("map")}>
+                  Match Sounds to Letters →
+                </button>
+              </>
+            )}
+          </div>
+        )}
+
+        {trainingStep === "map" && (
+          <div className="card gameCard">
+            <div className="gameRoundLabel">3 · SOUND → LETTERS</div>
+            <div className="gameIcon">🔤</div>
+            <h1>How would you spell this sound part?</h1>
+
+            <button className="soundButton" onClick={() => speak(currentMapSound)}>
+              🔊 {currentMapSound}
             </button>
 
             <div className="choiceGrid">
-              {meaningOptions.map((option) => (
+              {currentMapOptions.map((option) => (
                 <button
                   key={option}
-                  className={`choiceButton ${soundChoice === option ? "selected" : ""}`}
-                  onClick={() => !soundChecked && setSoundChoice(option)}
+                  className={`choiceButton ${mapChoice === option ? "selected" : ""}`}
+                  onClick={() => !mapChecked && setMapChoice(option)}
                 >
                   {option}
                 </button>
               ))}
             </div>
 
-            {soundChecked && (
-              <div className={`result ${soundChoice === current.meaning ? "ok" : "no"}`}>
-                {soundChoice === current.meaning
-                  ? "Nice! You found the meaning. +1 ⭐"
-                  : "Not quite. Here is the correct meaning."}
-                <div className="small">{current.meaning}</div>
-              </div>
-            )}
+            {!mapChecked ? (
+              <button
+                className="primary"
+                disabled={!mapChoice}
+                onClick={() => setMapChecked(true)}
+              >
+                Check mapping
+              </button>
+            ) : (
+              <>
+                <div className={`result ${mapChoice === currentMapCorrect ? "ok" : "no"}`}>
+                  {mapChoice === currentMapCorrect
+                    ? "Correct sound-to-spelling match."
+                    : `This sound is written “${currentMapCorrect}” in this word.`}
+                </div>
 
-            <div className="actions">
-              {!soundChecked ? (
                 <button
                   className="primary"
-                  disabled={!soundChoice}
                   onClick={() => {
-                    setSoundChecked(true);
-                    if (soundChoice === current.meaning) {
-                      setTrainingStars((stars) => stars + 1);
+                    if (mapIndex + 1 < current.spellingChunks.length) {
+                      setMapIndex((value) => value + 1);
+                      setMapChoice("");
+                      setMapChecked(false);
+                    } else {
+                      setTrainingStep("blend");
                     }
                   }}
                 >
-                  Lock Answer
+                  {mapIndex + 1 < current.spellingChunks.length ? "Next sound part →" : "Build the Word →"}
                 </button>
-              ) : (
-                <button className="primary" onClick={() => setTrainingStep("letter")}>
-                  Next Round →
-                </button>
-              )}
-            </div>
+              </>
+            )}
           </div>
         )}
 
-        {trainingStep === "letter" && (
+        {trainingStep === "blend" && (
           <div className="card gameCard">
-            <div className="gameRoundLabel">GAME 2 · LETTER TRAP</div>
-            <div className="gameIcon">🧩</div>
-            <h1>Catch the missing letter</h1>
+            <div className="gameRoundLabel">4 · BLEND BACK</div>
+            <div className="gameIcon">🧱</div>
+            <h1>Build the word from the spelling chunks</h1>
 
             <button className="secondary" onClick={() => speak(current.word)}>
-              🔊 Hear Again
+              🔊 Hear whole word
             </button>
 
-            <div className="letterPuzzle">{letterPuzzle.display}</div>
+            <div className="builtWord">
+              {blendChoices.length ? blendChoices.join("") : "Tap the chunks below"}
+            </div>
 
-            <div className="letterChoices">
-              {letterPuzzle.options.map((letter) => (
+            <div className="chunkBank">
+              {blendPool.map((chunk, i) => (
                 <button
-                  key={letter}
-                  className={`letterChoice ${letterChoice === letter ? "selected" : ""}`}
-                  onClick={() => !letterChecked && setLetterChoice(letter)}
+                  key={`${chunk}-${i}`}
+                  className="chunkTile"
+                  disabled={blendChoices.length >= current.spellingChunks.length}
+                  onClick={() => setBlendChoices((items) => [...items, chunk])}
                 >
-                  {letter}
+                  {chunk}
                 </button>
               ))}
             </div>
 
-            {letterChecked && (
-              <div className={`result ${letterChoice === letterPuzzle.correct ? "ok" : "no"}`}>
-                {letterChoice === letterPuzzle.correct
-                  ? "Trap cleared! +1 ⭐"
-                  : `The missing letter is “${letterPuzzle.correct}”.`}
-                <div className="small">Word: {current.word}</div>
-              </div>
-            )}
-
             <div className="actions">
-              {!letterChecked ? (
+              <button className="secondary" onClick={() => setBlendChoices([])}>Reset</button>
+              <button
+                className="primary"
+                disabled={blendChoices.length !== current.spellingChunks.length}
+                onClick={() => {
+                  if (blendChoices.join("") === current.word) {
+                    setTrainingStars((stars) => stars + 1);
+                    setTrainingStep("context");
+                  } else {
+                    setBlendChoices([]);
+                  }
+                }}
+              >
+                Check & Continue
+              </button>
+            </div>
+          </div>
+        )}
+
+        {trainingStep === "context" && (
+          <div className="card gameCard">
+            <div className="gameRoundLabel">5 · CONTEXT DETECTIVE</div>
+            <div className="gameIcon">🕵️</div>
+            <h1>Which sentence uses the word correctly?</h1>
+            <p className="small"><strong>{current.word}</strong> means {current.meaning}.</p>
+
+            <div className="choiceGrid">
+              {contextOptions.map((sentence) => (
                 <button
-                  className="primary"
-                  disabled={!letterChoice}
-                  onClick={() => {
-                    setLetterChecked(true);
-                    if (letterChoice === letterPuzzle.correct) {
-                      setTrainingStars((stars) => stars + 1);
-                    }
-                  }}
+                  key={sentence}
+                  className={`choiceButton ${contextChoice === sentence ? "selected" : ""}`}
+                  onClick={() => !contextChecked && setContextChoice(sentence)}
                 >
-                  Check Letter
+                  {sentence}
                 </button>
-              ) : (
+              ))}
+            </div>
+
+            {!contextChecked ? (
+              <button
+                className="primary"
+                disabled={!contextChoice}
+                onClick={() => setContextChecked(true)}
+              >
+                Check sentence
+              </button>
+            ) : (
+              <>
+                <div className={`result ${contextChoice === current.sentence ? "ok" : "no"}`}>
+                  {contextChoice === current.sentence
+                    ? "Yes — that sentence fits the meaning."
+                    : `Best sentence: ${current.sentence}`}
+                </div>
+                <button className="primary" onClick={() => setTrainingStep("recall")}>
+                  Try a Memory Challenge →
+                </button>
+              </>
+            )}
+          </div>
+        )}
+
+        {trainingStep === "recall" && (
+          <div className="card gameCard">
+            <div className="gameRoundLabel">6 · ASSISTED RECALL</div>
+            <div className="gameIcon">🧠</div>
+            <h1>Fill the tricky sound-spelling part</h1>
+
+            <button className="secondary" onClick={() => speak(current.word)}>
+              🔊 Hear word
+            </button>
+
+            <div className="letterPuzzle">{assistedDisplay}</div>
+
+            <input
+              className="chunkInput"
+              value={recallAnswer}
+              onChange={(event) => setRecallAnswer(event.target.value)}
+              placeholder="Type the missing chunk"
+              autoCapitalize="none"
+              autoCorrect="off"
+              spellCheck={false}
+              disabled={recallChecked}
+            />
+
+            {!recallChecked ? (
+              <button
+                className="primary"
+                disabled={!recallAnswer.trim()}
+                onClick={() => setRecallChecked(true)}
+              >
+                Check chunk
+              </button>
+            ) : (
+              <>
+                <div className={`result ${normalize(recallAnswer) === normalize(current.trickyChunk) ? "ok" : "no"}`}>
+                  {normalize(recallAnswer) === normalize(current.trickyChunk)
+                    ? "Good recall. Now remove all hints."
+                    : `The tricky part is “${current.trickyChunk}”. Look once, then hide it.`}
+                </div>
                 <button
                   className="primary"
                   onClick={() => {
@@ -562,16 +786,18 @@ export default function HomePage() {
                     setTimeout(() => speak(current.word), 150);
                   }}
                 >
-                  Final Round: Full Spell →
+                  Final: Full Spell →
                 </button>
-              )}
-            </div>
+              </>
+            )}
           </div>
         )}
 
         {trainingStep === "spell" && (
           <div className="gameCardShell">
-            <div className="finalRoundBanner">FINAL GAME · FULL SPELL · Worth 2 ⭐</div>
+            <div className="finalRoundBanner">
+              {delayedMode ? "DELAYED CHECK · NO LEARNING HINTS FIRST" : "7 · FULL SPELL · PROVE YOU KNOW IT"}
+            </div>
 
             <FullSpellCard
               current={current}
@@ -586,8 +812,37 @@ export default function HomePage() {
               setShowSentence={setShowSentence}
               submitFullSpell={submitFullSpell}
               nextWord={nextWord}
-              mode="TRAINING · FULL SPELL"
+              mode={delayedMode ? "DELAYED CHECK" : "TRAINING · FULL SPELL"}
             />
+          </div>
+        )}
+
+        {trainingStep === "repair" && result === "wrong" && (
+          <div className="card gameCard">
+            <div className="gameRoundLabel">8 · REPAIR ROUND</div>
+            <div className="gameIcon">🛠️</div>
+            <h1>Fix the part that fooled you</h1>
+
+            <div className="repairCompare">
+              <div><span>You wrote</span><strong>{answer}</strong></div>
+              <div><span>Correct word</span><strong>{current.word}</strong></div>
+            </div>
+
+            <div className="trickyFocus">
+              Focus on this spelling chunk: <strong>{current.trickyChunk}</strong>
+            </div>
+
+            <button className="secondary" onClick={() => speak(current.word)}>
+              🔊 Hear the word again
+            </button>
+
+            <p className="small">
+              You will not repeat it immediately. This word will return later for another Full Spell.
+            </p>
+
+            <button className="primary" onClick={nextWord}>
+              Continue — bring it back later →
+            </button>
           </div>
         )}
       </main>
@@ -717,7 +972,15 @@ function FullSpellCard({
         </div>
       )}
 
-      {result && (
+      {result && mode !== "TRAINING · FULL SPELL" && mode !== "DELAYED CHECK" && (
+        <div className="actions">
+          <button className="primary" onClick={nextWord}>
+            {index + 1 === total ? "Finish Session" : "Next Word"}
+          </button>
+        </div>
+      )}
+
+      {result === "correct" && (mode === "TRAINING · FULL SPELL" || mode === "DELAYED CHECK") && (
         <div className="actions">
           <button className="primary" onClick={nextWord}>
             {index + 1 === total ? "Finish Session" : "Next Word"}
