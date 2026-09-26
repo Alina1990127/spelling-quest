@@ -124,14 +124,14 @@ export default function HomePage() {
 
     if (isCorrect) {
       const correctFullSpells = prev.correctFullSpells + 1;
-      const status =
+      const status: WordProgress["status"] =
         correctFullSpells >= 4
           ? "mastered"
           : phase === "boss" && correctFullSpells >= 2
           ? "bee-ready"
           : "learning";
 
-      const next = {
+      const next: Record<number, WordProgress> = {
         ...progress,
         [current.id]: {
           ...prev,
@@ -146,7 +146,7 @@ export default function HomePage() {
       if (phase === "boss") setBossScore((score) => score + 1);
       setResult("correct");
     } else {
-      const next = {
+      const next: Record<number, WordProgress> = {
         ...progress,
         [current.id]: {
           ...prev,
@@ -203,6 +203,17 @@ export default function HomePage() {
             <button className="primary" onClick={() => setPhase("home")}>Back Home</button>
             <button className="secondary" onClick={beginBoss}>New Boss Battle</button>
           </div>
+        </div>
+      </main>
+    );
+  }
+
+  if (!current) {
+    return (
+      <main>
+        <div className="card">
+          <h2>No word is loaded yet.</h2>
+          <button className="primary" onClick={() => setPhase("home")}>Back Home</button>
         </div>
       </main>
     );
