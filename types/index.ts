@@ -7,6 +7,10 @@ export type SpellingWord = {
   meaning: string;
   sentence: string;
   difficulty: "easy" | "tricky" | "monster";
+  soundChunks: string[];
+  spellingChunks: string[];
+  trickyChunk: string;
+  contextDistractors: string[];
 };
 
 export type WordProgress = {
