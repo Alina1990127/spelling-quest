@@ -5,7 +5,9 @@ import { words } from "@/data/words";
 import { loadProgress, saveProgress, scheduleReview } from "@/lib/progress";
 import type { SpellingWord, WordProgress } from "@/types";
 
-type Phase = "home" | "training" | "boss" | "review-placeholder" | "progress-placeholder" | "summary";
+type Phase = "home" | "training" | "review" | "boss" | "progress" | "summary";
+type TrainingStep = "learn" | "mini" | "spell";
+type Result = "correct" | "wrong" | null;
 
 const blankProgress = (): WordProgress => ({
   status: "new",
@@ -26,16 +28,43 @@ function normalize(value: string) {
   return value.trim().toLowerCase();
 }
 
+function makeDecoys(word: string) {
+  const candidates = new Set<string>();
+  if (word.length > 3) {
+    const mid = Math.floor(word.length / 2);
+    candidates.add(word.slice(0, mid) + word[mid + 1] + word[mid] + word.slice(mid + 2));
+    candidates.add(word.slice(0, mid) + word[mid] + word[mid] + word.slice(mid + 1));
+    candidates.add(word.slice(0, mid - 1) + word.slice(mid));
+  }
+  candidates.delete(word);
+  const fallback = [word + "e", word.slice(0, -1), word[0] + word];
+  for (const item of fallback) {
+    if (item && item !== word) candidates.add(item);
+  }
+  return [word, ...Array.from(candidates).slice(0, 2)].sort();
+}
+
+function statusLabel(status?: WordProgress["status"]) {
+  if (!status) return "New";
+  return status === "bee-ready"
+    ? "Bee Ready"
+    : status.charAt(0).toUpperCase() + status.slice(1);
+}
+
 export default function HomePage() {
   const [phase, setPhase] = useState<Phase>("home");
+  const [trainingStep, setTrainingStep] = useState<TrainingStep>("learn");
   const [progress, setProgress] = useState<Record<number, WordProgress>>({});
   const [sessionWords, setSessionWords] = useState<SpellingWord[]>([]);
   const [index, setIndex] = useState(0);
   const [answer, setAnswer] = useState("");
-  const [result, setResult] = useState<"correct" | "wrong" | null>(null);
+  const [result, setResult] = useState<Result>(null);
   const [showMeaning, setShowMeaning] = useState(false);
   const [showSentence, setShowSentence] = useState(false);
-  const [bossScore, setBossScore] = useState(0);
+  const [miniChoice, setMiniChoice] = useState("");
+  const [miniChecked, setMiniChecked] = useState(false);
+  const [sessionScore, setSessionScore] = useState(0);
+  const [summaryTitle, setSummaryTitle] = useState("");
 
   useEffect(() => {
     setProgress(loadProgress());
@@ -45,101 +74,121 @@ export default function HomePage() {
     () => Object.values(progress).filter((item) => item.status === "mastered").length,
     [progress]
   );
-
   const tricky = useMemo(
     () => Object.values(progress).filter((item) => item.status === "tricky").length,
     [progress]
   );
-
   const learning = useMemo(
     () => Object.values(progress).filter((item) => item.status === "learning").length,
     [progress]
   );
-
   const beeReady = useMemo(
     () => Object.values(progress).filter((item) => item.status === "bee-ready").length,
     [progress]
   );
 
   const current = sessionWords[index];
+  const miniOptions = useMemo(() => current ? makeDecoys(current.word) : [], [current?.id]);
 
   function persist(next: Record<number, WordProgress>) {
     setProgress(next);
     saveProgress(next);
   }
 
-  function pickTrainingWords() {
-    const dueOrTricky = words.filter((word) => {
-      const item = progress[word.id];
-      if (!item) return false;
-      if (item.status === "tricky" || item.status === "learning") return true;
-      if (item.nextReviewAt && new Date(item.nextReviewAt) <= new Date()) return true;
-      return false;
-    });
+  function resetWordState() {
+    setAnswer("");
+    setResult(null);
+    setShowMeaning(false);
+    setShowSentence(false);
+    setMiniChoice("");
+    setMiniChecked(false);
+  }
 
+  function startTraining() {
     const newWords = words.filter((word) => !progress[word.id] || progress[word.id].status === "new");
-    const chosen = [...dueOrTricky, ...newWords]
-      .filter((word, idx, arr) => arr.findIndex((x) => x.id === word.id) === idx)
-      .slice(0, 10);
+    const fallback = words.filter((word) => progress[word.id]?.status !== "mastered");
+    const chosen = (newWords.length ? newWords : fallback).slice(0, 10);
 
     setSessionWords(chosen.length ? chosen : words.slice(0, 10));
     setIndex(0);
-    setAnswer("");
-    setResult(null);
-    setShowMeaning(false);
-    setShowSentence(false);
+    setTrainingStep("learn");
+    setSessionScore(0);
+    resetWordState();
     setPhase("training");
-    setTimeout(() => speak((chosen.length ? chosen : words.slice(0, 10))[0].word), 200);
   }
 
-  function beginBoss() {
-    const pool = words.filter((word) => {
+  function startReview() {
+    const now = new Date();
+    const chosen = words.filter((word) => {
+      const item = progress[word.id];
+      if (!item) return false;
+      const due = item.nextReviewAt ? new Date(item.nextReviewAt) <= now : false;
+      return item.status === "tricky" || item.status === "learning" || due;
+    }).slice(0, 10);
+
+    setSessionWords(chosen);
+    setIndex(0);
+    setSessionScore(0);
+    resetWordState();
+    setPhase("review");
+    if (chosen[0]) setTimeout(() => speak(chosen[0].word), 150);
+  }
+
+  function startBoss() {
+    const practiced = words.filter((word) => {
       const status = progress[word.id]?.status;
       return status && status !== "new";
     });
+    const pool = practiced.length >= 5 ? practiced : words;
     const chosen = [...pool].sort(() => Math.random() - 0.5).slice(0, 5);
-    const fallback = words.slice(0, 5);
-    setSessionWords(chosen.length >= 5 ? chosen : fallback);
+
+    setSessionWords(chosen);
     setIndex(0);
-    setBossScore(0);
-    setAnswer("");
-    setResult(null);
-    setShowMeaning(false);
-    setShowSentence(false);
+    setSessionScore(0);
+    resetWordState();
     setPhase("boss");
-    setTimeout(() => speak((chosen.length >= 5 ? chosen : fallback)[0].word), 200);
+    if (chosen[0]) setTimeout(() => speak(chosen[0].word), 150);
+  }
+
+  function finishSession(title: string) {
+    setSummaryTitle(title);
+    setPhase("summary");
   }
 
   function nextWord() {
     const nextIndex = index + 1;
     if (nextIndex >= sessionWords.length) {
-      setPhase("summary");
+      const title =
+        phase === "boss"
+          ? "Boss Battle Complete"
+          : phase === "review"
+          ? "Review Complete"
+          : "Training Complete";
+      finishSession(title);
       return;
     }
+
     setIndex(nextIndex);
-    setAnswer("");
-    setResult(null);
-    setShowMeaning(false);
-    setShowSentence(false);
-    setTimeout(() => speak(sessionWords[nextIndex].word), 200);
+    resetWordState();
+    if (phase === "training") {
+      setTrainingStep("learn");
+    } else {
+      setTimeout(() => speak(sessionWords[nextIndex].word), 150);
+    }
   }
 
-  function submitFullSpell(event: FormEvent) {
-    event.preventDefault();
-    if (!current || !answer.trim() || result) return;
+  function updateAfterSpell(isCorrect: boolean) {
+    if (!current) return;
 
-    const isCorrect = normalize(answer) === normalize(current.word);
     const prev = progress[current.id] ?? blankProgress();
     const now = new Date().toISOString();
 
     if (isCorrect) {
       const correctFullSpells = prev.correctFullSpells + 1;
-      const status: WordProgress["status"] =
-        correctFullSpells >= 4
-          ? "mastered"
-          : phase === "boss" && correctFullSpells >= 2
-          ? "bee-ready"
-          : "learning";
+      let status: WordProgress["status"] = "learning";
+
+      if (correctFullSpells >= 4) status = "mastered";
+      else if ((phase === "review" || phase === "boss") && correctFullSpells >= 2) status = "bee-ready";
 
       const next: Record<number, WordProgress> = {
         ...progress,
@@ -153,7 +202,7 @@ export default function HomePage() {
         }
       };
       persist(next);
-      if (phase === "boss") setBossScore((score) => score + 1);
+      setSessionScore((score) => score + 1);
       setResult("correct");
     } else {
       const next: Record<number, WordProgress> = {
@@ -171,23 +220,28 @@ export default function HomePage() {
     }
   }
 
+  function submitFullSpell(event: FormEvent) {
+    event.preventDefault();
+    if (!current || !answer.trim() || result) return;
+    updateAfterSpell(normalize(answer) === normalize(current.word));
+  }
+
   if (phase === "home") {
     return (
       <main>
         <div className="dashboardHero">
           <span className="badge">SPELLING QUEST</span>
           <h1>Your Spelling Dashboard</h1>
-          <p>Choose what you want to do. Every learning path still ends with a complete Full Spell.</p>
+          <p>Four clear modes. Every learning path still ends with a complete Full Spell.</p>
         </div>
 
         <div className="card">
           <div className="sectionHead">
             <div>
               <h2>Progress Snapshot</h2>
-              <p className="small">Your current word status across the loaded library.</p>
+              <p className="small">Saved on this browser for the MVP.</p>
             </div>
           </div>
-
           <div className="stats statsFive">
             <div className="stat"><strong>{mastered}</strong><div className="small">Mastered</div></div>
             <div className="stat"><strong>{beeReady}</strong><div className="small">Bee Ready</div></div>
@@ -198,23 +252,23 @@ export default function HomePage() {
         </div>
 
         <div className="moduleGrid">
-          <button className="moduleCard moduleTraining" onClick={pickTrainingWords}>
+          <button className="moduleCard moduleTraining" onClick={startTraining}>
             <span className="moduleIcon">🎧</span>
             <span className="moduleEyebrow">LEARN NEW WORDS</span>
             <strong>Training</strong>
-            <span>Hear → understand → mini game → Full Spell</span>
+            <span>Hear → understand → mini game → Full Spell.</span>
             <b>Start Training →</b>
           </button>
 
-          <button className="moduleCard" onClick={() => setPhase("review-placeholder")}>
+          <button className="moduleCard" onClick={startReview}>
             <span className="moduleIcon">🔁</span>
             <span className="moduleEyebrow">FIX WEAK WORDS</span>
             <strong>Review Box</strong>
-            <span>Practice Tricky, Learning and due review words first.</span>
-            <b>Review Tricky Words →</b>
+            <span>Tricky, Learning and due-review words come first.</span>
+            <b>Review Words →</b>
           </button>
 
-          <button className="moduleCard" onClick={beginBoss}>
+          <button className="moduleCard" onClick={startBoss}>
             <span className="moduleIcon">👾</span>
             <span className="moduleEyebrow">TEST YOURSELF</span>
             <strong>Boss Battle</strong>
@@ -222,11 +276,11 @@ export default function HomePage() {
             <b>Start Battle →</b>
           </button>
 
-          <button className="moduleCard" onClick={() => setPhase("progress-placeholder")}>
+          <button className="moduleCard" onClick={() => setPhase("progress")}>
             <span className="moduleIcon">📊</span>
             <span className="moduleEyebrow">SEE YOUR GROWTH</span>
             <strong>Progress</strong>
-            <span>See which words are Mastered, Bee Ready, Learning or Tricky.</span>
+            <span>See status, attempts and Full Spell success for every word.</span>
             <b>View Progress →</b>
           </button>
         </div>
@@ -234,20 +288,41 @@ export default function HomePage() {
     );
   }
 
-  if (phase === "review-placeholder" || phase === "progress-placeholder") {
-    const isReview = phase === "review-placeholder";
+  if (phase === "progress") {
     return (
       <main>
-        <div className="card placeholderCard">
-          <span className="badge">{isReview ? "REVIEW BOX" : "PROGRESS"}</span>
-          <h2>{isReview ? "Review Box is the next module." : "Progress is scheduled after the core learning modules."}</h2>
-          <p>
-            {isReview
-              ? "This entrance is now locked into the dashboard. In the next phase it will pull Tricky, Learning and due-review words into a Full Spell review queue."
-              : "This entrance is now locked into the dashboard. Its full page will show status totals, word lists and attempt counts."}
-          </p>
-          <div className="actions">
-            <button className="primary" onClick={() => setPhase("home")}>Back to Dashboard</button>
+        <div className="header">
+          <div>
+            <span className="badge">PROGRESS</span>
+            <h1>Your Word Progress</h1>
+          </div>
+          <button className="secondary" onClick={() => setPhase("home")}>Back</button>
+        </div>
+
+        <div className="stats statsFive">
+          <div className="stat"><strong>{mastered}</strong><div className="small">Mastered</div></div>
+          <div className="stat"><strong>{beeReady}</strong><div className="small">Bee Ready</div></div>
+          <div className="stat"><strong>{learning}</strong><div className="small">Learning</div></div>
+          <div className="stat"><strong>{tricky}</strong><div className="small">Tricky</div></div>
+          <div className="stat"><strong>{words.length}</strong><div className="small">Total</div></div>
+        </div>
+
+        <div className="card tableCard">
+          <div className="wordTable">
+            <div className="wordRow wordHead">
+              <span>Word</span><span>Status</span><span>Attempts</span><span>Full Spell ✓</span>
+            </div>
+            {words.map((word) => {
+              const item = progress[word.id];
+              return (
+                <div className="wordRow" key={word.id}>
+                  <span>{word.word}</span>
+                  <span><span className={`statusPill status-${item?.status ?? "new"}`}>{statusLabel(item?.status)}</span></span>
+                  <span>{item?.attempts ?? 0}</span>
+                  <span>{item?.correctFullSpells ?? 0}</span>
+                </div>
+              );
+            })}
           </div>
         </div>
       </main>
@@ -257,14 +332,28 @@ export default function HomePage() {
   if (phase === "summary") {
     return (
       <main>
-        <div className="card">
-          <span className="badge">MISSION COMPLETE</span>
-          <h2>{bossScore ? `Boss score: ${bossScore}/${sessionWords.length}` : "Training complete"}</h2>
-          <p>Your difficult words have been saved for review. Full-spell successes schedule later reviews automatically.</p>
+        <div className="card summaryCard">
+          <span className="badge">SESSION COMPLETE</span>
+          <h1>{summaryTitle}</h1>
+          <div className="scoreCircle">{sessionScore}/{sessionWords.length}</div>
+          <p>Full Spell results have been saved. Wrong words are placed in the Review Box automatically.</p>
           <div className="actions">
-            <button className="primary" onClick={() => setPhase("home")}>Back Home</button>
-            <button className="secondary" onClick={beginBoss}>New Boss Battle</button>
+            <button className="primary" onClick={() => setPhase("home")}>Back to Dashboard</button>
+            {summaryTitle.includes("Boss") && <button className="secondary" onClick={startBoss}>Play Again</button>}
           </div>
+        </div>
+      </main>
+    );
+  }
+
+  if (phase === "review" && sessionWords.length === 0) {
+    return (
+      <main>
+        <div className="card emptyState">
+          <span className="badge">REVIEW BOX</span>
+          <h1>Nothing to review yet.</h1>
+          <p>Words will appear here after they become Tricky, Learning, or reach their review date.</p>
+          <button className="primary" onClick={() => setPhase("home")}>Back to Dashboard</button>
         </div>
       </main>
     );
@@ -274,9 +363,91 @@ export default function HomePage() {
     return (
       <main>
         <div className="card">
-          <h2>No word is loaded yet.</h2>
+          <h2>No word is loaded.</h2>
           <button className="primary" onClick={() => setPhase("home")}>Back Home</button>
         </div>
+      </main>
+    );
+  }
+
+  if (phase === "training") {
+    return (
+      <main>
+        <div className="header">
+          <div>
+            <span className="badge">TRAINING</span>
+            <h2>Word {index + 1} of {sessionWords.length}</h2>
+          </div>
+          <button className="secondary" onClick={() => setPhase("home")}>Exit</button>
+        </div>
+
+        <div className="progress">
+          <div style={{ width: `${((index + 1) / sessionWords.length) * 100}%` }} />
+        </div>
+
+        {trainingStep === "learn" && (
+          <div className="card trainingCard">
+            <span className="stepLabel">STEP 1 · LEARN</span>
+            <h1 className="learnWord">{current.word}</h1>
+            <button className="primary" onClick={() => speak(current.word)}>🔊 Hear Word</button>
+            <div className="learnFacts">
+              <div><strong>Meaning</strong><p>{current.meaning}</p></div>
+              <div><strong>Sentence</strong><p>{current.sentence}</p></div>
+            </div>
+            <div className="actions">
+              <button className="primary" onClick={() => setTrainingStep("mini")}>Ready for Mini Game →</button>
+            </div>
+          </div>
+        )}
+
+        {trainingStep === "mini" && (
+          <div className="card trainingCard">
+            <span className="stepLabel">STEP 2 · MINI GAME</span>
+            <h2>Which spelling is correct?</h2>
+            <button className="secondary" onClick={() => speak(current.word)}>🔊 Hear Word</button>
+            <div className="choiceGrid">
+              {miniOptions.map((option) => (
+                <button
+                  key={option}
+                  className={`choiceButton ${miniChoice === option ? "selected" : ""}`}
+                  onClick={() => !miniChecked && setMiniChoice(option)}
+                >
+                  {option}
+                </button>
+              ))}
+            </div>
+            {miniChecked && (
+              <div className={`result ${miniChoice === current.word ? "ok" : "no"}`}>
+                {miniChoice === current.word ? "Pattern found ✓" : `Correct spelling: ${current.word}`}
+              </div>
+            )}
+            <div className="actions">
+              {!miniChecked ? (
+                <button className="primary" disabled={!miniChoice} onClick={() => setMiniChecked(true)}>Check Answer</button>
+              ) : (
+                <button className="primary" onClick={() => { setTrainingStep("spell"); setAnswer(""); setResult(null); setTimeout(() => speak(current.word), 150); }}>Go to Full Spell →</button>
+              )}
+            </div>
+          </div>
+        )}
+
+        {trainingStep === "spell" && (
+          <FullSpellCard
+            current={current}
+            index={index}
+            total={sessionWords.length}
+            answer={answer}
+            setAnswer={setAnswer}
+            result={result}
+            showMeaning={showMeaning}
+            setShowMeaning={setShowMeaning}
+            showSentence={showSentence}
+            setShowSentence={setShowSentence}
+            submitFullSpell={submitFullSpell}
+            nextWord={nextWord}
+            mode="TRAINING · FULL SPELL"
+          />
+        )}
       </main>
     );
   }
@@ -285,7 +456,7 @@ export default function HomePage() {
     <main>
       <div className="header">
         <div>
-          <span className="badge">{phase === "boss" ? "BOSS BATTLE" : "FULL SPELL TRAINING"}</span>
+          <span className="badge">{phase === "boss" ? "BOSS BATTLE" : "REVIEW BOX"}</span>
           <h2>Word {index + 1} of {sessionWords.length}</h2>
         </div>
         <button className="secondary" onClick={() => setPhase("home")}>Exit</button>
@@ -295,58 +466,111 @@ export default function HomePage() {
         <div style={{ width: `${((index + 1) / sessionWords.length) * 100}%` }} />
       </div>
 
-      <div className="card">
-        <h2>Listen, then spell the whole word.</h2>
-        <p className="small">No letters are shown before you submit.</p>
-
-        <div className="actions">
-          <button className="primary" onClick={() => speak(current.word)}>🔊 Hear Word</button>
-          <button className="secondary" onClick={() => setShowMeaning((v) => !v)}>Meaning</button>
-          <button className="secondary" onClick={() => setShowSentence((v) => !v)}>Sentence</button>
-        </div>
-
-        {showMeaning && <div className="clue"><strong>Meaning:</strong> {current.meaning}</div>}
-        {showSentence && <div className="clue"><strong>Sentence:</strong> {current.sentence.replace(new RegExp(current.word, "gi"), "_____")}</div>}
-
-        <form onSubmit={submitFullSpell}>
-          <input
-            className="spell-input"
-            value={answer}
-            onChange={(event) => setAnswer(event.target.value)}
-            placeholder="Type the complete word"
-            autoCapitalize="none"
-            autoCorrect="off"
-            spellCheck={false}
-            disabled={Boolean(result)}
-            aria-label="Spell the complete word"
-          />
-          <div className="actions">
-            <button className="primary" type="submit" disabled={!answer.trim() || Boolean(result)}>Submit Full Spell</button>
-          </div>
-        </form>
-
-        {result === "correct" && (
-          <div className="result ok">
-            Correct — {current.word}
-          </div>
-        )}
-
-        {result === "wrong" && (
-          <div className="result no">
-            <div>Your spelling: <strong>{answer}</strong></div>
-            <div>Correct spelling: <strong>{current.word}</strong></div>
-            <div className="small">This word is now in the Tricky review box.</div>
-          </div>
-        )}
-
-        {result && (
-          <div className="actions">
-            <button className="primary" onClick={nextWord}>
-              {index + 1 === sessionWords.length ? "Finish Mission" : "Next Word"}
-            </button>
-          </div>
-        )}
-      </div>
+      <FullSpellCard
+        current={current}
+        index={index}
+        total={sessionWords.length}
+        answer={answer}
+        setAnswer={setAnswer}
+        result={result}
+        showMeaning={showMeaning}
+        setShowMeaning={setShowMeaning}
+        showSentence={showSentence}
+        setShowSentence={setShowSentence}
+        submitFullSpell={submitFullSpell}
+        nextWord={nextWord}
+        mode={phase === "boss" ? "BOSS BATTLE · FULL SPELL" : "REVIEW · FULL SPELL"}
+      />
     </main>
+  );
+}
+
+type FullSpellProps = {
+  current: SpellingWord;
+  index: number;
+  total: number;
+  answer: string;
+  setAnswer: (value: string) => void;
+  result: Result;
+  showMeaning: boolean;
+  setShowMeaning: (value: boolean) => void;
+  showSentence: boolean;
+  setShowSentence: (value: boolean) => void;
+  submitFullSpell: (event: FormEvent) => void;
+  nextWord: () => void;
+  mode: string;
+};
+
+function FullSpellCard({
+  current,
+  index,
+  total,
+  answer,
+  setAnswer,
+  result,
+  showMeaning,
+  setShowMeaning,
+  showSentence,
+  setShowSentence,
+  submitFullSpell,
+  nextWord,
+  mode
+}: FullSpellProps) {
+  return (
+    <div className="card">
+      <span className="stepLabel">{mode}</span>
+      <h2>Listen, then spell the whole word.</h2>
+      <p className="small">No letters are shown before you submit.</p>
+
+      <div className="actions">
+        <button className="primary" onClick={() => speak(current.word)}>🔊 Hear Word</button>
+        <button className="secondary" onClick={() => setShowMeaning(!showMeaning)}>Meaning</button>
+        <button className="secondary" onClick={() => setShowSentence(!showSentence)}>Sentence</button>
+      </div>
+
+      {showMeaning && <div className="clue"><strong>Meaning:</strong> {current.meaning}</div>}
+      {showSentence && (
+        <div className="clue">
+          <strong>Sentence:</strong> {current.sentence.replace(new RegExp(current.word, "gi"), "_____")}
+        </div>
+      )}
+
+      <form onSubmit={submitFullSpell}>
+        <input
+          className="spell-input"
+          value={answer}
+          onChange={(event) => setAnswer(event.target.value)}
+          placeholder="Type the complete word"
+          autoCapitalize="none"
+          autoCorrect="off"
+          spellCheck={false}
+          disabled={Boolean(result)}
+          aria-label="Spell the complete word"
+        />
+        <div className="actions">
+          <button className="primary" type="submit" disabled={!answer.trim() || Boolean(result)}>
+            Submit Full Spell
+          </button>
+        </div>
+      </form>
+
+      {result === "correct" && <div className="result ok">FULL SPELL ✓ — {current.word}</div>}
+
+      {result === "wrong" && (
+        <div className="result no">
+          <div>Your spelling: <strong>{answer}</strong></div>
+          <div>Correct spelling: <strong>{current.word}</strong></div>
+          <div className="small">This word is now in the Tricky review box.</div>
+        </div>
+      )}
+
+      {result && (
+        <div className="actions">
+          <button className="primary" onClick={nextWord}>
+            {index + 1 === total ? "Finish Session" : "Next Word"}
+          </button>
+        </div>
+      )}
+    </div>
   );
 }
