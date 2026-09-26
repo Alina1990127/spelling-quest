@@ -351,3 +351,135 @@ button {
     font-size: 18px;
   }
 }
+
+
+.gameTopBar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 16px;
+  margin-bottom: 14px;
+}
+
+.gameScore {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  font-weight: 800;
+}
+
+.questTrack {
+  display: grid;
+  grid-template-columns: repeat(10, 1fr);
+  gap: 8px;
+  margin: 18px 0 24px;
+}
+
+.questNode {
+  height: 38px;
+  border-radius: 999px;
+  background: #e8edf5;
+  display: grid;
+  place-items: center;
+  font-weight: 800;
+  color: #66748b;
+}
+
+.questNode.active {
+  background: #1f4cff;
+  color: #fff;
+  transform: scale(1.05);
+}
+
+.questNode.done {
+  background: #dff7e8;
+  color: #167044;
+}
+
+.gameCard {
+  max-width: 780px;
+  margin: 0 auto;
+  text-align: center;
+  padding: 30px;
+}
+
+.gameRoundLabel {
+  font-size: 12px;
+  font-weight: 900;
+  letter-spacing: .12em;
+  color: #68758b;
+}
+
+.gameIcon {
+  font-size: 58px;
+  margin: 12px 0 4px;
+}
+
+.soundButton {
+  display: inline-flex;
+  margin: 14px auto 10px;
+  background: #1f4cff;
+  color: #fff;
+  padding: 16px 24px;
+  border-radius: 16px;
+  font-size: 18px;
+}
+
+.letterPuzzle {
+  margin: 26px auto 18px;
+  font-size: clamp(40px, 8vw, 72px);
+  font-weight: 900;
+  letter-spacing: .12em;
+}
+
+.letterChoices {
+  display: flex;
+  justify-content: center;
+  gap: 14px;
+  margin: 16px 0 22px;
+}
+
+.letterChoice {
+  width: 70px;
+  height: 70px;
+  border-radius: 18px;
+  background: #f2f5fb;
+  font-size: 28px;
+  font-weight: 900;
+  color: #18233a;
+  border: 2px solid transparent;
+}
+
+.letterChoice.selected {
+  border-color: #1f4cff;
+  background: #edf2ff;
+}
+
+.gameCardShell {
+  max-width: 780px;
+  margin: 0 auto;
+}
+
+.finalRoundBanner {
+  text-align: center;
+  font-size: 12px;
+  font-weight: 900;
+  letter-spacing: .12em;
+  color: #68758b;
+  margin-bottom: 10px;
+}
+
+@media (max-width: 760px) {
+  .questTrack {
+    grid-template-columns: repeat(5, 1fr);
+  }
+
+  .gameTopBar {
+    align-items: flex-start;
+  }
+
+  .letterChoice {
+    width: 58px;
+    height: 58px;
+  }
+}
