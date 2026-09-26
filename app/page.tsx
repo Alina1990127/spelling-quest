@@ -6,7 +6,7 @@ import { loadProgress, saveProgress, scheduleReview } from "@/lib/progress";
 import type { SpellingWord, WordProgress } from "@/types";
 
 type Phase = "home" | "training" | "review" | "boss" | "progress" | "summary";
-type TrainingStep = "sound" | "letter" | "spell";
+type TrainingStep = "learn" | "sound" | "letter" | "spell";
 type Result = "correct" | "wrong" | null;
 
 const blankProgress = (): WordProgress => ({
@@ -37,7 +37,7 @@ function statusLabel(status?: WordProgress["status"]) {
 
 export default function HomePage() {
   const [phase, setPhase] = useState<Phase>("home");
-  const [trainingStep, setTrainingStep] = useState<TrainingStep>("sound");
+  const [trainingStep, setTrainingStep] = useState<TrainingStep>("learn");
   const [progress, setProgress] = useState<Record<number, WordProgress>>({});
   const [sessionWords, setSessionWords] = useState<SpellingWord[]>([]);
   const [index, setIndex] = useState(0);
@@ -121,7 +121,7 @@ export default function HomePage() {
 
     setSessionWords(chosen.length ? chosen : words.slice(0, 10));
     setIndex(0);
-    setTrainingStep("sound");
+    setTrainingStep("learn");
     setSessionScore(0);
     setTrainingStars(0);
     resetWordState();
@@ -186,7 +186,7 @@ export default function HomePage() {
     resetWordState();
 
     if (phase === "training") {
-      setTrainingStep("sound");
+      setTrainingStep("learn");
     } else {
       setTimeout(() => speak(sessionWords[nextIndex].word), 150);
     }
@@ -424,9 +424,35 @@ export default function HomePage() {
           ))}
         </div>
 
+        {trainingStep === "learn" && (
+          <div className="card gameCard">
+            <div className="gameRoundLabel">LEARN · MEET THE WORD</div>
+            <div className="gameIcon">📚</div>
+            <h1 className="learnWord">{current.word}</h1>
+            <button className="soundButton" onClick={() => speak(current.word)}>🔊 Hear Pronunciation</button>
+
+            <div className="learnFacts">
+              <div>
+                <strong>Meaning</strong>
+                <p>{current.meaning}</p>
+              </div>
+              <div>
+                <strong>Sentence</strong>
+                <p>{current.sentence}</p>
+              </div>
+            </div>
+
+            <div className="actions">
+              <button className="primary" onClick={() => setTrainingStep("sound")}>
+                I’ve Learned It → Start Game
+              </button>
+            </div>
+          </div>
+        )}
+
         {trainingStep === "sound" && (
           <div className="card gameCard">
-            <div className="gameRoundLabel">ROUND 1 · SOUND HUNT</div>
+            <div className="gameRoundLabel">GAME 1 · SOUND HUNT</div>
             <div className="gameIcon">🎧</div>
             <h1>Which meaning matches the word?</h1>
             <p className="small">Listen first. No spelling is shown yet.</p>
@@ -481,7 +507,7 @@ export default function HomePage() {
 
         {trainingStep === "letter" && (
           <div className="card gameCard">
-            <div className="gameRoundLabel">ROUND 2 · LETTER TRAP</div>
+            <div className="gameRoundLabel">GAME 2 · LETTER TRAP</div>
             <div className="gameIcon">🧩</div>
             <h1>Catch the missing letter</h1>
 
@@ -545,7 +571,7 @@ export default function HomePage() {
 
         {trainingStep === "spell" && (
           <div className="gameCardShell">
-            <div className="finalRoundBanner">FINAL ROUND · FULL SPELL · Worth 2 ⭐</div>
+            <div className="finalRoundBanner">FINAL GAME · FULL SPELL · Worth 2 ⭐</div>
 
             <FullSpellCard
               current={current}
