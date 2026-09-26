@@ -5,7 +5,7 @@ import { words } from "@/data/words";
 import { loadProgress, saveProgress, scheduleReview } from "@/lib/progress";
 import type { SpellingWord, WordProgress } from "@/types";
 
-type Phase = "home" | "training" | "boss" | "summary";
+type Phase = "home" | "training" | "boss" | "review-placeholder" | "progress-placeholder" | "summary";
 
 const blankProgress = (): WordProgress => ({
   status: "new",
@@ -48,6 +48,16 @@ export default function HomePage() {
 
   const tricky = useMemo(
     () => Object.values(progress).filter((item) => item.status === "tricky").length,
+    [progress]
+  );
+
+  const learning = useMemo(
+    () => Object.values(progress).filter((item) => item.status === "learning").length,
+    [progress]
+  );
+
+  const beeReady = useMemo(
+    () => Object.values(progress).filter((item) => item.status === "bee-ready").length,
     [progress]
   );
 
@@ -164,28 +174,80 @@ export default function HomePage() {
   if (phase === "home") {
     return (
       <main>
-        <div className="header">
-          <div>
-            <span className="badge">SPELLING QUEST</span>
-            <h1>Train. Spell. Conquer.</h1>
-            <p>Every word must finish with a complete, independent spelling attempt.</p>
-          </div>
+        <div className="dashboardHero">
+          <span className="badge">SPELLING QUEST</span>
+          <h1>Your Spelling Dashboard</h1>
+          <p>Choose what you want to do. Every learning path still ends with a complete Full Spell.</p>
         </div>
 
         <div className="card">
-          <h2>Today's Mission</h2>
-          <p>
-            Practice up to 10 words, then enter Boss Battle. Hints can help you learn,
-            but only a full spelling counts.
-          </p>
-          <div className="stats">
-            <div className="stat"><strong>{mastered}</strong><div className="small">Mastered</div></div>
-            <div className="stat"><strong>{tricky}</strong><div className="small">Tricky words</div></div>
-            <div className="stat"><strong>{words.length}</strong><div className="small">Words loaded</div></div>
+          <div className="sectionHead">
+            <div>
+              <h2>Progress Snapshot</h2>
+              <p className="small">Your current word status across the loaded library.</p>
+            </div>
           </div>
+
+          <div className="stats statsFive">
+            <div className="stat"><strong>{mastered}</strong><div className="small">Mastered</div></div>
+            <div className="stat"><strong>{beeReady}</strong><div className="small">Bee Ready</div></div>
+            <div className="stat"><strong>{learning}</strong><div className="small">Learning</div></div>
+            <div className="stat"><strong>{tricky}</strong><div className="small">Tricky</div></div>
+            <div className="stat"><strong>{words.length}</strong><div className="small">Total Words</div></div>
+          </div>
+        </div>
+
+        <div className="moduleGrid">
+          <button className="moduleCard moduleTraining" onClick={pickTrainingWords}>
+            <span className="moduleIcon">🎧</span>
+            <span className="moduleEyebrow">LEARN NEW WORDS</span>
+            <strong>Training</strong>
+            <span>Hear → understand → mini game → Full Spell</span>
+            <b>Start Training →</b>
+          </button>
+
+          <button className="moduleCard" onClick={() => setPhase("review-placeholder")}>
+            <span className="moduleIcon">🔁</span>
+            <span className="moduleEyebrow">FIX WEAK WORDS</span>
+            <strong>Review Box</strong>
+            <span>Practice Tricky, Learning and due review words first.</span>
+            <b>Review Tricky Words →</b>
+          </button>
+
+          <button className="moduleCard" onClick={beginBoss}>
+            <span className="moduleIcon">👾</span>
+            <span className="moduleEyebrow">TEST YOURSELF</span>
+            <strong>Boss Battle</strong>
+            <span>Five-word Spelling Bee challenge with no letter hints.</span>
+            <b>Start Battle →</b>
+          </button>
+
+          <button className="moduleCard" onClick={() => setPhase("progress-placeholder")}>
+            <span className="moduleIcon">📊</span>
+            <span className="moduleEyebrow">SEE YOUR GROWTH</span>
+            <strong>Progress</strong>
+            <span>See which words are Mastered, Bee Ready, Learning or Tricky.</span>
+            <b>View Progress →</b>
+          </button>
+        </div>
+      </main>
+    );
+  }
+
+  if (phase === "review-placeholder" || phase === "progress-placeholder") {
+    const isReview = phase === "review-placeholder";
+    return (
+      <main>
+        <div className="card placeholderCard">
+          <span className="badge">{isReview ? "REVIEW BOX" : "PROGRESS"}</span>
+          <h2>{isReview ? "Review Box is the next module." : "Progress is scheduled after the core learning modules."}</h2>
+          <p>
+            {isReview
+              ? "This entrance is now locked into the dashboard. In the next phase it will pull Tricky, Learning and due-review words into a Full Spell review queue."
+              : "This entrance is now locked into the dashboard. Its full page will show status totals, word lists and attempt counts."}
+          </p>
           <div className="actions">
-            <button className="primary" onClick={pickTrainingWords}>Start Training</button>
-            <button className="secondary" onClick={beginBoss}>Boss Battle</button>
+            <button className="primary" onClick={() => setPhase("home")}>Back to Dashboard</button>
           </div>
         </div>
       </main>
